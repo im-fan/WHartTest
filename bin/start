@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+# 本地启动：中间件走 Docker Compose，前后端在本机运行。
+# 用法：
+#   ./bin/start init      启动中间件，并初始化虚拟环境、依赖和数据库
+#   ./bin/start start     启动后端、Celery 和前端
+#   ./bin/start restart   重启前后端
+#   ./bin/start stop      停止前后端
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+COMPOSE_FILE="$ROOT/docker-compose.local.yml"
+DJANGO_DIR="$ROOT/WHartTest_Django"
+VUE_DIR="$ROOT/WHartTest_Vue"
+RUN_DIR="$ROOT/data/run"
+ENV_FILE="$DJANGO_DIR/.env"
+
+BACKEND_PORT="${BACKEND_PORT:-8912}"
+FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+
+usage() {
+  cat <<'EOF'
+用法: ./bin/start <init|start|restart|stop>
+
+  init      启动中间件，并初始化虚拟环境、依赖、配置和数据库
+  start     在本机启动后端、Celery 和前端
+  restart   重启本机前后端，不重启中间件
+  stop      停止本机前后端，不停止中间件
+EOF
+}
+
+compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose -f "$COMPOSE_FILE" "$@"
+  elif command -v docker-compose >/dev/null 2>&1; then
+    docker-compose -f "$COMPOSE_FILE" "$@"
+  else
+    echo "未找到 docker compose。" >&2
+    exit 1
+  fi
+}
+
+load_local_env() {
+  export DATABASE_TYPE="${DATABASE_TYPE:-postgres}"
+  export POSTGRES_HOST="${POSTGRES_HOST:-127.0.0.1}"
+  export POSTGRES_PORT="${POSTGRES_PORT:-8919}"
+  export POSTGRES_DB="${POSTGRES_DB:-wharttest}"
+  export POSTGRES_USER="${POSTGRES_USER:-postgres}"
+  export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
+  export CELERY_BROKER_URL="${CELERY_BROKER_URL:-redis://127.0.0.1:8911/0}"
+  export CELERY_RESULT_BACKEND="${CELERY_RESULT_BACKEND:-redis://127.0.0.1:8911/0}"
+  export QDRANT_URL="${QDRANT_URL:-http://127.0.0.1:8918}"
+  export DJANGO_BASE_URL="${DJANGO_BASE_URL:-http://127.0.0.1:${BACKEND_PORT}}"
+  export DJANGO_DEBUG="${DJANGO_DEBUG:-True}"
+  export DJANGO_SETTINGS_MODULE="${DJANGO_SETTINGS_MODULE:-wharttest_django.settings}"
+
+  if [[ -f "$ENV_FILE" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source <(sed 's/\r$//' "$ENV_FILE")
+    set +a
+  fi
+}
+
+base_python() {
+  local candidate version
+  if [[ -n "${BASE_PYTHON:-}" && -x "$BASE_PYTHON" ]]; then
+    printf '%s' "$BASE_PYTHON"
+    return
+  fi
+  for candidate in python3.11 python3.12 python3.10 python3; do
+    if ! command -v "$candidate" >/dev/null 2>&1; then
+      continue
+    fi
+    version=$("$candidate" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+    case "$version" in
+      3.1[0-2])
+        printf '%s' "$(command -v "$candidate")"
+        return
+        ;;
+    esac
+  done
+  echo "未找到 Python 3.10–3.12。项目依赖与镜像一致，请安装 Python 3.11。" >&2
+  exit 1
+}
+
+python_bin() {
+  if [[ -x "$DJANGO_DIR/.venv/bin/python" ]]; then
+    printf '%s' "$DJANGO_DIR/.venv/bin/python"
+    return
+  fi
+  base_python
+}
+
+requirements_stamp() {
+  printf '%s' "$DJANGO_DIR/.venv/.requirements.sha256"
+}
+
+requirements_hash() {
+  shasum -a 256 "$DJANGO_DIR/requirements.txt" | awk '{print $1}'
+}
+
+backend_imports_ok() {
+  "$DJANGO_DIR/.venv/bin/python" -c "import django, daphne, celery" >/dev/null 2>&1
+}
+
+ensure_backend_env() {
+  local py venv_py stamp current
+  py=$(base_python)
+  venv_py="$DJANGO_DIR/.venv/bin/python"
+  if [[ ! -x "$venv_py" ]]; then
+    echo "使用 $py 创建虚拟环境 $DJANGO_DIR/.venv"
+    "$py" -m venv "$DJANGO_DIR/.venv"
+  fi
+  stamp=$(requirements_stamp)
+  current=$(requirements_hash)
+  if [[ ! -f "$stamp" || "$(cat "$stamp")" != "$current" ]] || ! backend_imports_ok; then
+    echo "安装后端依赖，这一步会比较久..."
+    "$DJANGO_DIR/.venv/bin/pip" install --upgrade pip
+    "$DJANGO_DIR/.venv/bin/pip" install -r "$DJANGO_DIR/requirements.txt"
+    if ! backend_imports_ok; then
+      echo "后端依赖安装后仍无法导入 Django、daphne 或 Celery。" >&2
+      exit 1
+    fi
+    printf '%s' "$current" >"$stamp"
+  fi
+}
+
+ensure_local_files() {
+  if [[ ! -f "$ENV_FILE" && -f "$DJANGO_DIR/.env.example" ]]; then
+    cp "$DJANGO_DIR/.env.example" "$ENV_FILE"
+    echo "已根据 .env.example 生成 $ENV_FILE"
+  fi
+  mkdir -p "$ROOT/data/media" "$RUN_DIR"
+  if [[ ! -d "$VUE_DIR/node_modules" ]]; then
+    echo "安装前端依赖..."
+    (cd "$VUE_DIR" && npm install)
+  fi
+}
+
+ensure_postgres_database() {
+  local py db_name
+  py=$(python_bin)
+  db_name=$(
+    cd "$DJANGO_DIR"
+    "$py" -c 'from pathlib import Path; from dotenv import load_dotenv; from wharttest_django.data_variant import get_postgres_db_name; load_dotenv(Path(".env")); print(get_postgres_db_name(Path(".")))'
+  )
+  echo "确认数据库 ${db_name} 存在..."
+  if compose exec -T postgres psql -U "${POSTGRES_USER:-postgres}" -tAc "SELECT 1 FROM pg_database WHERE datname='${db_name}'" | grep -q 1; then
+    return 0
+  fi
+  compose exec -T postgres psql -U "${POSTGRES_USER:-postgres}" -c "CREATE DATABASE \"${db_name}\""
+}
+
+init_database() {
+  local py
+  py=$(python_bin)
+  ensure_postgres_database
+  echo "执行数据库迁移和初始数据..."
+  (
+    cd "$DJANGO_DIR"
+    "$py" manage.py migrate --noinput
+    "$py" manage.py init_admin
+    "$py" manage.py init_default_prompts
+    "$py" manage.py init_skills --skills-dir "$ROOT/WHartTest_Skills"
+  )
+}
+
+pid_file() {
+  printf '%s/%s.pid' "$RUN_DIR" "$1"
+}
+
+is_running() {
+  local pidfile
+  pidfile=$(pid_file "$1")
+  [[ -f "$pidfile" ]] || return 1
+  local pid
+  pid=$(cat "$pidfile")
+  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+stop_one() {
+  local name="$1"
+  local pidfile pid
+  pidfile=$(pid_file "$name")
+  if [[ ! -f "$pidfile" ]]; then
+    echo "$name 未在运行"
+    return 0
+  fi
+  pid=$(cat "$pidfile")
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    echo "停止 $name ($pid)"
+    kill "$pid" 2>/dev/null || true
+    pkill -P "$pid" 2>/dev/null || true
+    local i
+    for i in 1 2 3 4 5; do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+      pkill -9 -P "$pid" 2>/dev/null || true
+    fi
+  else
+    echo "$name 的进程已退出"
+  fi
+  rm -f "$pidfile"
+}
+
+start_bg() {
+  local name="$1"
+  local workdir="$2"
+  shift 2
+  if is_running "$name"; then
+    echo "$name 已在运行，pid $(cat "$(pid_file "$name")")"
+    return 0
+  fi
+  mkdir -p "$RUN_DIR"
+  echo "启动 $name"
+  (
+    cd "$workdir"
+    exec "$@"
+  ) >>"$RUN_DIR/$name.log" 2>&1 &
+  echo $! >"$(pid_file "$name")"
+  echo "  pid $(cat "$(pid_file "$name")")，日志 $RUN_DIR/$name.log"
+}
+
+wait_ready() {
+  local label="$1"
+  shift
+  local i
+  echo "等待 ${label}..."
+  for i in $(seq 1 40); do
+    if "$@" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "${label} 在 40 秒内没有就绪。" >&2
+  return 1
+}
+
+wait_middleware() {
+  wait_ready "PostgreSQL" compose exec -T postgres pg_isready -U "${POSTGRES_USER:-postgres}"
+  wait_ready "Redis" compose exec -T redis redis-cli ping
+  wait_ready "Qdrant" bash -c "curl -sf http://127.0.0.1:${QDRANT_PORT:-8918}/healthz >/dev/null || curl -sf http://127.0.0.1:${QDRANT_PORT:-8918}/ >/dev/null"
+}
+
+cmd_init() {
+  ensure_local_files
+  load_local_env
+  ensure_backend_env
+  echo "启动中间件：postgres、redis、qdrant"
+  compose up -d postgres redis qdrant
+  wait_middleware
+  init_database
+  compose ps postgres redis qdrant
+  echo "初始化完成。PostgreSQL 127.0.0.1:8919，Redis 127.0.0.1:8911，Qdrant http://127.0.0.1:8918"
+  echo "接下来执行 ./bin/start start"
+}
+
+cmd_start() {
+  ensure_local_files
+  load_local_env
+  ensure_backend_env
+  local py
+  py=$(python_bin)
+
+  start_bg backend "$DJANGO_DIR" \
+    "$py" -m uvicorn wharttest_django.asgi:application --host 0.0.0.0 --port "$BACKEND_PORT" --reload
+  start_bg celery "$DJANGO_DIR" \
+    "$py" -m celery -A wharttest_django worker -l info --concurrency=2 -Q celery,task_center
+  start_bg celery-beat "$DJANGO_DIR" \
+    "$py" -m celery -A wharttest_django beat -l info --schedule="$ROOT/data/celerybeat-schedule"
+  start_bg frontend "$VUE_DIR" \
+    npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT"
+
+  echo "前端 http://127.0.0.1:${FRONTEND_PORT}"
+  echo "后端 http://127.0.0.1:${BACKEND_PORT}"
+  echo "默认用户名: ${DJANGO_ADMIN_USERNAME:-admin}"
+  echo "默认密码: ${DJANGO_ADMIN_PASSWORD:-admin123456}"
+}
+
+cmd_stop() {
+  stop_one frontend
+  stop_one celery-beat
+  stop_one celery
+  stop_one backend
+  echo "前后端已停止"
+}
+
+cmd_restart() {
+  cmd_stop
+  cmd_start
+}
+
+main() {
+  local action="${1:-}"
+  case "$action" in
+    init) cmd_init ;;
+    start) cmd_start ;;
+    restart) cmd_restart ;;
+    stop) cmd_stop ;;
+    -h|--help|help|"") usage ;;
+    *)
+      echo "无法识别命令：$action" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

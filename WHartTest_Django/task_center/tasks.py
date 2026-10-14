@@ -74,6 +74,21 @@ def execute_scheduled_task(self, task_id: int, trigger_type: str = 'scheduled'):
             batch_data = resp.json().get('data', {})
             log_lines.append(f"[{timezone.now().isoformat()}] 批量执行已触发: batch_id={batch_data.get('batch_id')}")
 
+        elif task.module == ScheduledTask.TaskModule.CODEX:
+            log_lines.append(f"[{timezone.now().isoformat()}] 通过本机 Codex CLI 实现测试任务...")
+            from orchestrator_integration.codex_runtime import lookup_api_key, run_codex_prompt
+
+            goal = (task.codex_prompt or task.description or task.name).strip()
+            result = run_codex_prompt(
+                project_id=task.project_id,
+                goal=goal,
+                workspace_key=f"scheduled-{task.id}-{execution.id}",
+                api_key=lookup_api_key(task.creator),
+            )
+            log_lines.append(f"[{timezone.now().isoformat()}] Codex 线程: {result.get('thread_id')}")
+            log_lines.append(f"[{timezone.now().isoformat()}] 工作区: {result.get('workspace')}")
+            log_lines.append(result.get('final_response') or '')
+
         elif task.module == ScheduledTask.TaskModule.TEST_SUITE:
             log_lines.append(f"[{timezone.now().isoformat()}] 触发测试套件执行...")
             if not task.test_suite:

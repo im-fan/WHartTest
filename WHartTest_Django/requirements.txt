@@ -32,6 +32,10 @@ python-dotenv==1.1.1
 # https://github.com/openai/openai-python/blob/main/LICENSE
 openai>=1.109.1
 
+# Codex Python SDK，版本与本机 codex-cli 0.162.0 对齐。
+# 运行时通过 CODEX_BIN 指向本机 CLI，不使用 SDK 自带的另一份二进制。
+openai-codex==0.162.0
+
 # Django查询过滤器 - BSD许可证 (当前版本: 25.1)
 # https://github.com/carltongibson/django-filter/blob/main/LICENSE
 django-filter==25.1

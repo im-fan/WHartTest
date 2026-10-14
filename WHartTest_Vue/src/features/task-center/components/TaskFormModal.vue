@@ -25,11 +25,25 @@
           <a-textarea v-model="form.description" :placeholder="modalText.taskDescriptionPlaceholder" :max-length="200" :auto-size="{ minRows: 2, maxRows: 3 }" />
         </a-form-item>
 
+        <a-form-item
+          v-if="form.module === 'codex'"
+          :label="modalText.codexPrompt"
+          field="codex_prompt"
+          :rules="[{ required: true, message: modalText.codexPromptRequired }]"
+        >
+          <a-textarea
+            v-model="form.codex_prompt"
+            :placeholder="modalText.codexPromptPlaceholder"
+            :auto-size="{ minRows: 4, maxRows: 8 }"
+          />
+        </a-form-item>
+
         <div class="form-row">
           <a-form-item :label="modalText.module" field="module" :rules="[{ required: true, message: modalText.selectValue }]">
             <a-select v-model="form.module" :placeholder="modalText.selectModule" @change="onModuleChange">
               <a-option value="ui_automation">{{ modalText.uiAutomation }}</a-option>
               <a-option value="test_suite">{{ modalText.testSuite }}</a-option>
+              <a-option value="codex">{{ modalText.codexImplement }}</a-option>
             </a-select>
           </a-form-item>
 
@@ -193,6 +207,10 @@ const modalText = computed(() => (
         enterValue: 'Enter a value',
         uiAutomation: 'UI Automation',
         testSuite: 'Test Suite',
+        codexImplement: 'Codex implementation',
+        codexPrompt: 'Codex prompt',
+        codexPromptRequired: 'Describe what Codex should implement',
+        codexPromptPlaceholder: 'Example: Generate API cases for the login flow and write them back to the project',
         selectUiCase: 'Select UI Cases',
         selectAtLeastOneUiCase: 'Select at least one UI case',
         selectedUiCases: (count: number) => `${count} case(s) selected`,
@@ -243,6 +261,10 @@ const modalText = computed(() => (
         enterValue: '请输入',
         uiAutomation: 'UI 自动化',
         testSuite: '测试套件',
+        codexImplement: 'Codex 实现',
+        codexPrompt: 'Codex 任务说明',
+        codexPromptRequired: '请填写交给 Codex 实现的目标',
+        codexPromptPlaceholder: '例如：根据登录流程生成接口用例，并通过平台工具写回当前项目',
         selectUiCase: '选择UI用例',
         selectAtLeastOneUiCase: '请选择至少一个UI用例',
         selectedUiCases: (count: number) => `已选 ${count} 个用例`,
@@ -311,6 +333,7 @@ const weekDayOptions = computed(() => [
 const defaultForm = (): TaskFormData => ({
   name: '',
   description: '',
+  codex_prompt: '',
   module: 'ui_automation',
   execution_target: 'actuator',
   schedule_type: 'daily',
@@ -408,6 +431,7 @@ const open = (task?: ScheduledTask) => {
     Object.assign(form, {
       name: task.name,
       description: task.description,
+      codex_prompt: task.codex_prompt || '',
       module: task.module,
       execution_target: task.execution_target,
       schedule_type: task.schedule_type,

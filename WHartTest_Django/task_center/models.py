@@ -24,6 +24,7 @@ class ScheduledTask(models.Model):
     class TaskModule(models.TextChoices):
         UI_AUTOMATION = 'ui_automation', _('UI 自动化')
         TEST_SUITE = 'test_suite', _('测试套件')
+        CODEX = 'codex', _('Codex 实现')
 
     class ExecutionTarget(models.TextChoices):
         ACTUATOR = 'actuator', _('执行器')
@@ -31,6 +32,10 @@ class ScheduledTask(models.Model):
     # 基本信息
     name = models.CharField(_('任务名称'), max_length=50)
     description = models.TextField(_('任务描述'), max_length=200, blank=True, default='')
+    codex_prompt = models.TextField(
+        _('Codex 任务说明'), blank=True, default='',
+        help_text=_('模块为 Codex 实现时，交给本机 Codex CLI 的目标说明'),
+    )
     project = models.ForeignKey(
         Project, on_delete=models.CASCADE,
         related_name='scheduled_tasks', verbose_name=_('所属项目')

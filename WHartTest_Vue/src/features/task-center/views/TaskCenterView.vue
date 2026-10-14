@@ -54,6 +54,7 @@
           >
             <a-option value="ui_automation">{{ pageText.uiAutomation }}</a-option>
             <a-option value="test_suite">{{ pageText.testSuite }}</a-option>
+            <a-option value="codex">{{ pageText.codexImplement }}</a-option>
           </a-select>
         </div>
 
@@ -220,6 +221,7 @@ const pageText = computed(() => (
         enabled: 'Enabled',
         uiAutomation: 'UI Automation',
         testSuite: 'Test Suite',
+        codexImplement: 'Codex implementation',
         runNow: 'Run now',
         records: 'Records',
         edit: 'Edit',
@@ -283,6 +285,7 @@ const pageText = computed(() => (
         enabled: '已启用',
         uiAutomation: 'UI 自动化',
         testSuite: '测试套件',
+        codexImplement: 'Codex 实现',
         runNow: '立即执行',
         records: '记录',
         edit: '编辑',
@@ -441,9 +444,11 @@ const executionDrawerTitle = computed(() => (
     : pageText.value.executionRecords
 ));
 
-const getModuleLabel = (module: ScheduledTask['module']) => (
-  module === 'ui_automation' ? pageText.value.uiAutomation : pageText.value.testSuite
-);
+const getModuleLabel = (module: ScheduledTask['module']) => {
+  if (module === 'ui_automation') return pageText.value.uiAutomation;
+  if (module === 'codex') return pageText.value.codexImplement;
+  return pageText.value.testSuite;
+};
 
 const formatDate = (dateStr: string) => {
   const date = new Date(dateStr);

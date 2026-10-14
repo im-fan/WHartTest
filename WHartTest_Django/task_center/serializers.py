@@ -22,7 +22,7 @@ class ScheduledTaskSerializer(serializers.ModelSerializer):
             'status', 'last_run_at', 'creator', 'creator_name',
             'schedule_display', 'created_at', 'updated_at',
             'test_suite', 'test_suite_name', 'ui_testcase_ids',
-            'actuator_id',
+            'actuator_id', 'codex_prompt',
         ]
         read_only_fields = [
             'project', 'status', 'last_run_at', 'creator', 'creator_name',
@@ -56,6 +56,11 @@ class ScheduledTaskSerializer(serializers.ModelSerializer):
         if module == ScheduledTask.TaskModule.TEST_SUITE:
             if not attrs.get('test_suite') and not getattr(self.instance, 'test_suite', None):
                 raise serializers.ValidationError({'test_suite': '测试套件模块必须关联一个测试套件'})
+
+        if module == ScheduledTask.TaskModule.CODEX:
+            prompt = attrs.get('codex_prompt', getattr(self.instance, 'codex_prompt', ''))
+            if not str(prompt or '').strip():
+                raise serializers.ValidationError({'codex_prompt': 'Codex 实现任务必须填写任务说明'})
 
         if schedule_type == ScheduledTask.ScheduleType.ONCE:
             if not attrs.get('once_datetime') and not getattr(self.instance, 'once_datetime', None):

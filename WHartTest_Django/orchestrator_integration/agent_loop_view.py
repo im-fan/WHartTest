@@ -49,6 +49,7 @@ from .middleware_config import (
 )
 from .playwright_instructions import PLAYWRIGHT_SCRIPT_INSTRUCTION
 from .stop_signal import should_stop, clear_stop_signal
+from .codex_runtime import interrupt_session, stream_codex_turn, use_codex_runtime
 from langgraph_integration.models import ChatSession, LLMConfig
 from langgraph_integration.views import (
     _extract_requirement_doc_images_for_message,
@@ -870,6 +871,20 @@ class AgentLoopStreamAPIView(View):
                 await sync_to_async(sync_file_references)(file_ids, project, FileReference.REF_LLM_CHAT, session_id, request.user)
         except Exception as exc:
             yield create_sse_data({"type": "error", "message": f"附件校验失败: {exc}"})
+            return
+
+        if use_codex_runtime():
+            codex_message = user_message
+            if llm_attachment_context:
+                codex_message = user_message + "\n\n以下是用户附加文件内容，请作为本轮对话上下文使用:" + llm_attachment_context
+            async for chunk in stream_codex_turn(
+                user=request.user,
+                project=project,
+                session_id=session_id,
+                message=codex_message,
+                create_sse_data=create_sse_data,
+            ):
+                yield chunk
             return
 
         # 1. 获取 LLM 配置
@@ -1805,8 +1820,10 @@ class AgentLoopStopAPIView(View):
         if not session_id:
             return api_error_response("session_id is required", 400)
 
-        # 3. 设置停止信号
+        # 3. 设置停止信号，并中断正在运行的 Codex 回合
         success = set_stop_signal(session_id)
+        if use_codex_runtime():
+            success = await interrupt_session(session_id) or success
 
         logger.info(
             f"AgentLoopStopAPI: Stop signal set for session {session_id} by user {user.id}"
@@ -2407,6 +2424,38 @@ class AgentLoopResumeAPIView(View):
         logger.info(
             f"AgentLoopResumeAPI: Resume request for session {session_id}, knowledge_base_id={knowledge_base_id}"
         )
+
+        if use_codex_runtime():
+            followup = body_data.get("message") or ""
+            if not followup:
+                followup = "用户审批结果：" + json.dumps(resume_data, ensure_ascii=False)
+            project = await sync_to_async(check_project_permission)(request.user, project_id) if project_id else None
+            if project_id and not project:
+                return StreamingHttpResponse(
+                    iter([create_sse_data({"type": "error", "message": "Project access denied", "code": 403})]),
+                    content_type="text/event-stream; charset=utf-8",
+                    status=403,
+                )
+
+            async def codex_resume():
+                if project is None:
+                    yield create_sse_data({"type": "error", "message": "project_id is required", "code": 400})
+                    return
+                async for chunk in stream_codex_turn(
+                    user=request.user,
+                    project=project,
+                    session_id=session_id,
+                    message=followup,
+                    create_sse_data=create_sse_data,
+                ):
+                    yield chunk
+
+            response = StreamingHttpResponse(
+                codex_resume(), content_type="text/event-stream; charset=utf-8"
+            )
+            response["Cache-Control"] = "no-cache"
+            response["X-Accel-Buffering"] = "no"
+            return response
 
         # 3. 返回 SSE 流式响应
         async def async_generator():

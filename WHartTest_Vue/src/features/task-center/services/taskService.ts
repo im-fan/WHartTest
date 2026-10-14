@@ -6,7 +6,7 @@ import { useAuthStore } from '@/store/authStore';
 
 export type TaskStatus = 'disabled' | 'running' | 'executing';
 export type ScheduleType = 'once' | 'hourly' | 'daily' | 'weekly';
-export type TaskModule = 'ui_automation' | 'test_suite';
+export type TaskModule = 'ui_automation' | 'test_suite' | 'codex';
 export type TriggerType = 'scheduled' | 'manual' | 'api';
 export type ExecutionStatus = 'running' | 'success' | 'failed';
 
@@ -14,6 +14,7 @@ export interface ScheduledTask {
   id: number;
   name: string;
   description: string;
+  codex_prompt: string;
   project: number;
   module: TaskModule;
   execution_target: string;
@@ -42,6 +43,7 @@ export interface ScheduledTask {
 export interface TaskFormData {
   name: string;
   description: string;
+  codex_prompt?: string;
   module: TaskModule;
   execution_target: string;
   schedule_type: ScheduleType;
