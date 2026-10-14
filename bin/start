@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 # 本地启动：中间件走 Docker Compose，前后端在本机运行。
-# 用法：
-#   ./bin/start init      启动中间件，并初始化虚拟环境、依赖和数据库
-#   ./bin/start start     启动后端、Celery 和前端
-#   ./bin/start restart   重启前后端
-#   ./bin/start stop      停止前后端
+# 用法：./bin/start help
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -21,13 +17,23 @@ BACKEND_PORT="${BACKEND_PORT:-8912}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 
 usage() {
-  cat <<'EOF'
-用法: ./bin/start <init|start|restart|stop>
+  cat <<EOF
+用法: ./bin/start <命令>
 
-  init      启动中间件，初始化依赖和数据库，并启用 WHartTest MCP
-  start     在本机启动后端、Celery 和前端
-  restart   重启本机前后端，不重启中间件
-  stop      停止本机前后端，不停止中间件
+  help       显示本说明
+  init       初始化本地环境，不启动前后端
+             - 用 Python 3.11 创建 WHartTest_Django/.venv 并安装后端依赖
+             - 缺少时生成 Django 与 MCP 的 .env，并安装前端依赖
+             - 用 Docker Compose 启动 PostgreSQL、Redis、Qdrant
+             - 创建数据库、执行迁移，并初始化管理员、提示词和技能
+             - 在平台中启用 WHartTest MCP（http://127.0.0.1:8006）
+  start      在本机启动后端、Celery Worker、Celery Beat 和前端
+             前端 http://127.0.0.1:${FRONTEND_PORT}，后端 http://127.0.0.1:${BACKEND_PORT}
+             默认账号 ${DJANGO_ADMIN_USERNAME:-admin} / ${DJANGO_ADMIN_PASSWORD:-admin123456}
+  restart    先停止再启动本机前后端，不重启中间件
+  stop       停止本机前后端和 Celery，不停止 Docker 中间件
+
+日志和进程号在 data/run/。
 EOF
 }
 
@@ -354,7 +360,7 @@ main() {
     start) cmd_start ;;
     restart) cmd_restart ;;
     stop) cmd_stop ;;
-    -h|--help|help|"") usage ;;
+    help|-h|--help|"") usage ;;
     *)
       echo "无法识别命令：$action" >&2
       usage >&2
