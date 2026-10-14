@@ -224,8 +224,8 @@ export async function testLlmConnection(id: number): Promise<ApiResponse<{ statu
 /**
  * 获取所有可用的供应商选项
  */
-export async function getProviders(): Promise<ApiResponse<{ choices: Array<{ value: string; label: string }> }>> {
-  const response = await request<{ choices: Array<{ value: string; label: string }> }>({
+export async function getProviders(): Promise<ApiResponse<{ choices: Array<{ value: string; label: string; available?: boolean }> }>> {
+  const response = await request<{ choices: Array<{ value: string; label: string; available?: boolean }> }>({
     url: `/lg/providers/`,
     method: 'GET',
   });
@@ -274,10 +274,25 @@ export async function getActiveLlmConfig(): Promise<ApiResponse<LlmConfig | null
 }
 
 export async function getCurrentRuntimeLlmConfig(_moduleKey = 'llm_chat'): Promise<ApiResponse<LlmRuntimeConfig | null>> {
-  const response = await getActiveLlmConfig();
+  const response = await request<LlmRuntimeConfig | null>({
+    url: '/lg/llm-configs/active-runtime/',
+    method: 'GET',
+  });
+  if (response.success) {
+    return {
+      status: 'success',
+      code: 200,
+      message: response.message || 'success',
+      data: response.data ?? null,
+      errors: null,
+    };
+  }
   return {
-    ...response,
-    data: response.data as LlmRuntimeConfig | null,
+    status: 'error',
+    code: 500,
+    message: response.message || '获取当前运行配置失败',
+    data: null,
+    errors: { detail: [response.message || '获取当前运行配置失败'] },
   };
 }
 

@@ -11,6 +11,9 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 COMPOSE_FILE="$ROOT/docker-compose.local.yml"
 DJANGO_DIR="$ROOT/WHartTest_Django"
 VUE_DIR="$ROOT/WHartTest_Vue"
+MCP_DIR="$ROOT/WHartTest_MCP"
+MCP_ENV_FILE="$MCP_DIR/.env"
+MCP_URL="${MCP_URL:-http://127.0.0.1:8006}"
 RUN_DIR="$ROOT/data/run"
 ENV_FILE="$DJANGO_DIR/.env"
 
@@ -21,7 +24,7 @@ usage() {
   cat <<'EOF'
 用法: ./bin/start <init|start|restart|stop>
 
-  init      启动中间件，并初始化虚拟环境、依赖、配置和数据库
+  init      启动中间件，初始化依赖和数据库，并启用 WHartTest MCP
   start     在本机启动后端、Celery 和前端
   restart   重启本机前后端，不重启中间件
   stop      停止本机前后端，不停止中间件
@@ -151,6 +154,55 @@ ensure_postgres_database() {
   compose exec -T postgres psql -U "${POSTGRES_USER:-postgres}" -c "CREATE DATABASE \"${db_name}\""
 }
 
+upsert_env_value() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  if [[ -f "$file" ]] && grep -q "^${key}=" "$file"; then
+    sed -i '' "s|^${key}=.*|${key}=${value}|" "$file"
+  else
+    printf '%s=%s\n' "$key" "$value" >>"$file"
+  fi
+}
+
+ensure_mcp_env() {
+  local backend_url api_key
+  backend_url="http://127.0.0.1:${BACKEND_PORT}"
+  api_key="${WHARTTEST_API_KEY:-wharttest-default-mcp-key-2025}"
+  if [[ ! -f "$MCP_ENV_FILE" && -f "$MCP_DIR/.env.example" ]]; then
+    cp "$MCP_DIR/.env.example" "$MCP_ENV_FILE"
+    echo "已根据 .env.example 生成 $MCP_ENV_FILE"
+  fi
+  touch "$MCP_ENV_FILE"
+  upsert_env_value "$MCP_ENV_FILE" WHARTTEST_BACKEND_URL "$backend_url"
+  upsert_env_value "$MCP_ENV_FILE" WHARTTEST_API_KEY "$api_key"
+  echo "MCP 配置已写入 $MCP_ENV_FILE"
+}
+
+enable_platform_mcp() {
+  local py
+  py=$(python_bin)
+  echo "在平台中启用 WHartTest MCP：${MCP_URL}"
+  (
+    cd "$DJANGO_DIR"
+    "$py" - <<PY
+import django
+django.setup()
+from mcp_tools.models import RemoteMCPConfig
+config, created = RemoteMCPConfig.objects.update_or_create(
+    name="WHartTest",
+    defaults={
+        "url": "${MCP_URL}",
+        "transport": "streamable-http",
+        "headers": {},
+        "is_active": True,
+    },
+)
+print("平台 MCP 已启用" if created else "平台 MCP 配置已更新", config.id)
+PY
+  )
+}
+
 init_database() {
   local py
   py=$(python_bin)
@@ -252,7 +304,9 @@ cmd_init() {
   echo "启动中间件：postgres、redis、qdrant"
   compose up -d postgres redis qdrant
   wait_middleware
+  ensure_mcp_env
   init_database
+  enable_platform_mcp
   compose ps postgres redis qdrant
   echo "初始化完成。PostgreSQL 127.0.0.1:8919，Redis 127.0.0.1:8911，Qdrant http://127.0.0.1:8918"
   echo "接下来执行 ./bin/start start"

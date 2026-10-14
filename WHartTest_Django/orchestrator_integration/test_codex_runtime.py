@@ -8,6 +8,7 @@ from orchestrator_integration.codex_runtime import (
     EXPECTED_SDK_VERSION,
     LocalCodexAuth,
     agent_runtime,
+    answer_only_instructions,
     ensure_api_key_login,
     load_local_codex_auth,
     notification_events,
@@ -78,6 +79,12 @@ class RuntimeSelectionTests(unittest.TestCase):
 
     def test_sdk_version_pin(self):
         self.assertEqual(EXPECTED_SDK_VERSION, "0.162.0")
+
+    def test_short_call_instructions_do_not_authorize_platform_writes(self):
+        text = answer_only_instructions("只返回改写后的查询")
+        self.assertIn("只返回改写后的查询", text)
+        self.assertNotIn("MCP", text)
+        self.assertNotIn("创建或修改用例", text)
 
 
 class LocalApiKeyAuthTests(unittest.TestCase):

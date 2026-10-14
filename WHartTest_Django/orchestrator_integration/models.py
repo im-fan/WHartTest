@@ -233,34 +233,24 @@ class AgentBlackboard(models.Model):
         # 调用AI总结所有原始记录
         try:
             logger.info(f"[Compression] 开始调用AI总结历史...")
-            from langgraph_integration.models import LLMConfig
-            from langgraph_integration.views import create_llm_instance
-            
-            active_config = LLMConfig.objects.get(is_active=True)
-            llm = create_llm_instance(active_config)
-            logger.info(f"[Compression] LLM实例创建成功,模型: {active_config.name}")
-            
-            content_text = '\n'.join([f"- {str(entry)[:200]}..." for entry in history])  # ⭐ 限制每条显示长度
+            from langgraph_integration.runtime import active_provider, complete
+
+            logger.info(f"[Compression] 使用激活配置: {active_provider()}")
+            content_text = '\n'.join([f"- {str(entry)[:200]}..." for entry in history])
             logger.info(f"[Compression] 待总结内容长度: {len(content_text)} 字符")
-            
-            from langchain_core.messages import SystemMessage, HumanMessage
-            messages = [
-                SystemMessage(content="你是Agent历史记录总结助手。"),
-                HumanMessage(content=f"""当前Agent执行历史即将超过上下文限制,请总结关键信息:
-
-{content_text}
-
-请用2-3句话总结:
-1. **已完成**:做了什么操作(如查询知识库、生成用例)
-2. **正在做**:当前任务进展
-3. **下一步计划**:接下来要做什么
-
-要求:简洁明了,100字以内。""")
-            ]
-            
-            logger.info(f"[Compression] 正在调用LLM生成摘要...")
-            response = llm.invoke(messages)
-            summary_content = response.content if hasattr(response, 'content') else str(response)
+            summary_content = complete(
+                (
+                    "当前Agent执行历史即将超过上下文限制,请总结关键信息:\n"
+                    f"{content_text}\n\n"
+                    "请用2-3句话总结:\n"
+                    "1. 已完成:做了什么操作\n"
+                    "2. 正在做:当前任务进展\n"
+                    "3. 下一步计划:接下来要做什么\n"
+                    "要求:简洁明了,100字以内。"
+                ),
+                system="你是Agent历史记录总结助手。",
+            )
+            logger.info("[Compression] 正在生成摘要...")
             summary_text = f"{summary_prefix} {summary_content.strip()}"
             logger.info(f"[Compression] AI摘要生成成功: {summary_text[:100]}...")
             

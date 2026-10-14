@@ -75,6 +75,10 @@ def execute_scheduled_task(self, task_id: int, trigger_type: str = 'scheduled'):
             log_lines.append(f"[{timezone.now().isoformat()}] 批量执行已触发: batch_id={batch_data.get('batch_id')}")
 
         elif task.module == ScheduledTask.TaskModule.CODEX:
+            from langgraph_integration.runtime import active_provider
+
+            if active_provider() != "codex":
+                raise ValueError("当前激活的不是 Codex，无法执行 Codex 实现任务")
             log_lines.append(f"[{timezone.now().isoformat()}] 通过本机 Codex CLI 实现测试任务...")
             from orchestrator_integration.codex_runtime import lookup_api_key, run_codex_prompt
 

@@ -7,6 +7,7 @@ export interface LlmConfig {
   provider: string; // 供应商
   name: string; // 模型名称
   api_url: string;
+  agent_home?: string; // 本地 Agent 配置目录，Codex 默认 ~/.codex
   api_key?: string; // 在列表视图中可能不返回，在详细视图中可能返回
   system_prompt?: string; // 系统提示词
   supports_vision?: boolean; // 是否支持图片/多模态输入
@@ -33,6 +34,7 @@ export interface CreateLlmConfigRequest {
   provider: string; // 供应商
   name: string; // 模型名称
   api_url: string;
+  agent_home?: string;
   api_key: string;
   system_prompt?: string; // 系统提示词（可选）
   supports_vision?: boolean; // 是否支持图片/多模态输入（可选）
@@ -57,6 +59,7 @@ export interface PartialUpdateLlmConfigRequest {
   provider?: string; // 供应商
   name?: string; // 模型名称
   api_url?: string;
+  agent_home?: string;
   api_key?: string;
   system_prompt?: string; // 系统提示词（可选）
   supports_vision?: boolean; // 是否支持图片/多模态输入（可选）

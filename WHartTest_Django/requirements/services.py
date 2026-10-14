@@ -4,39 +4,12 @@ import re
 from string import Template
 from typing import List, Dict, Any, Optional
 from django.conf import settings
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langgraph_integration.models import LLMConfig
 from .models import RequirementDocument, RequirementModule, DocumentImage
 from prompts.models import UserPrompt
 
 logger = logging.getLogger(__name__)
-
-
-def create_llm_instance(active_config, temperature=0.1):
-    """
-    根据配置创建LLM实例
-    统一使用OpenAI兼容格式，支持所有兼容的服务商
-    """
-    model_identifier = active_config.name or "gpt-3.5-turbo"
-
-    llm_kwargs = {
-        "model": model_identifier,
-        "temperature": temperature,
-        "api_key": active_config.api_key,
-        "base_url": active_config.api_url,
-        "max_retries": 3,
-        "timeout": 120,
-    }
-    llm = ChatOpenAI(**llm_kwargs)
-    logger.info(
-        f"Initialized OpenAI-compatible LLM with model: {model_identifier}, base_url: {active_config.api_url}"
-    )
-
-    return llm
-
-    return llm
 
 
 def safe_llm_invoke(llm, messages, max_retries=3, retry_delay=2):
@@ -61,7 +34,8 @@ def safe_llm_invoke(llm, messages, max_retries=3, retry_delay=2):
     import time
 
     last_error = None
-    for attempt in range(max_retries):
+    retries = 1 if getattr(llm, "provider", "") == "codex" else max_retries
+    for attempt in range(retries):
         try:
             response = llm.invoke(messages)
 
@@ -70,8 +44,8 @@ def safe_llm_invoke(llm, messages, max_retries=3, retry_delay=2):
                 return response
 
             # 响应为空，记录并重试
-            logger.warning(f"LLM 返回空响应，尝试重试 ({attempt + 1}/{max_retries})")
-            if attempt < max_retries - 1:
+            logger.warning(f"LLM 返回空响应，尝试重试 ({attempt + 1}/{retries})")
+            if attempt < retries - 1:
                 time.sleep(retry_delay * (attempt + 1))  # 递增延迟
             continue
 
@@ -79,17 +53,17 @@ def safe_llm_invoke(llm, messages, max_retries=3, retry_delay=2):
             # 捕获 'NoneType' object is not iterable 错误
             if "'NoneType' object is not iterable" in str(e):
                 logger.warning(
-                    f"LLM API 返回空 choices，尝试重试 ({attempt + 1}/{max_retries})"
+                    f"LLM API 返回空 choices，尝试重试 ({attempt + 1}/{retries})"
                 )
                 last_error = e
-                if attempt < max_retries - 1:
+                if attempt < retries - 1:
                     time.sleep(retry_delay * (attempt + 1))
                 continue
             raise
         except Exception as e:
             last_error = e
-            logger.warning(f"LLM 调用失败: {e}，尝试重试 ({attempt + 1}/{max_retries})")
-            if attempt < max_retries - 1:
+            logger.warning(f"LLM 调用失败: {e}，尝试重试 ({attempt + 1}/{retries})")
+            if attempt < retries - 1:
                 time.sleep(retry_delay * (attempt + 1))
             continue
 
@@ -1172,14 +1146,11 @@ class ModuleSplitter:
         self.llm = self._get_llm_instance()
 
     def _get_llm_instance(self):
-        """获取LLM实例"""
+        """获取当前激活配置对应的运行时。"""
         try:
-            active_config = LLMConfig.objects.filter(is_active=True).first()
-            if not active_config:
-                raise Exception("没有可用的LLM配置")
+            from langgraph_integration.runtime import get_active_runtime
 
-            # 使用新的LLM工厂函数，支持多供应商
-            return create_llm_instance(active_config, temperature=0.1)
+            return get_active_runtime(temperature=0.1)
         except Exception as e:
             logger.error(f"获取LLM实例失败: {e}")
             raise
@@ -2479,15 +2450,13 @@ class RequirementReviewEngine:
         self.llm = self._get_llm_instance()
 
     def _get_llm_instance(self):
-        """获取LLM实例"""
+        """获取当前激活配置对应的运行时。"""
         try:
-            active_config = LLMConfig.objects.filter(is_active=True).first()
-            if not active_config:
-                raise Exception("没有可用的LLM配置")
+            from langgraph_integration.runtime import get_active_runtime
 
-            self.llm_config = active_config  # 保存配置引用
-            # 使用新的LLM工厂函数，支持多供应商
-            return create_llm_instance(active_config, temperature=0.1)
+            runtime = get_active_runtime(temperature=0.1)
+            self.llm_config = runtime.config
+            return runtime
         except Exception as e:
             logger.error(f"获取LLM实例失败: {e}")
             raise

@@ -16,6 +16,7 @@ class LLMConfigSerializer(serializers.ModelSerializer):
             "provider",
             "name",
             "api_url",
+            "agent_home",
             "api_key",
             "system_prompt",
             "supports_vision",
@@ -29,7 +30,10 @@ class LLMConfigSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
         extra_kwargs = {
-            "api_key": {"write_only": True}  # API密钥只允许写入，不允许读取
+            "api_key": {"write_only": True, "required": False, "allow_blank": True},
+            "api_url": {"required": False, "allow_blank": True},
+            "agent_home": {"required": False, "allow_blank": True},
+            "name": {"required": False, "allow_blank": True},
         }
 
     def to_representation(self, instance):
@@ -52,10 +56,8 @@ class LLMConfigSerializer(serializers.ModelSerializer):
         return value.strip()
 
     def validate_name(self, value):
-        """验证模型名称（原name字段）"""
-        if not value or not value.strip():
-            raise serializers.ValidationError("模型名称不能为空")
-        return value.strip()
+        """验证模型名称。Codex 允许先留空，由 validate() 填入默认值。"""
+        return value.strip() if value else ""
 
     def validate_api_key(self, value):
         """验证API密钥"""
@@ -64,19 +66,31 @@ class LLMConfigSerializer(serializers.ModelSerializer):
         return value.strip() if value else ""
 
     def validate_api_url(self, value):
-        """验证API地址"""
+        """验证API地址。Codex 在 validate() 中放行空地址。"""
         if not value:
-            raise serializers.ValidationError("API地址不能为空")
-
-        # 简单的URL格式验证
+            return ""
         if not (value.startswith("http://") or value.startswith("https://")):
             raise serializers.ValidationError("API地址必须以http://或https://开头")
-
         return value
 
     def validate(self, attrs):
         """全局验证"""
-        # 检查是否存在同名配置（排除当前实例）
+        provider = attrs.get("provider", getattr(self.instance, "provider", ""))
+        api_url = attrs.get("api_url", getattr(self.instance, "api_url", ""))
+        name = (attrs.get("name") if "name" in attrs else getattr(self.instance, "name", "") or "").strip()
+        if provider == "codex":
+            agent_home = (attrs.get("agent_home") or getattr(self.instance, "agent_home", "") or "").strip()
+            attrs["agent_home"] = agent_home or LLMConfig.CODEX_DEFAULT_HOME
+            attrs["api_url"] = ""
+            attrs["name"] = name or "codex"
+        else:
+            if not name:
+                raise serializers.ValidationError({"name": "模型名称不能为空"})
+            if "name" in attrs:
+                attrs["name"] = name
+            if not api_url:
+                raise serializers.ValidationError({"api_url": "API地址不能为空"})
+
         config_name = attrs.get("config_name")
         if config_name:
             queryset = LLMConfig.objects.filter(config_name=config_name)

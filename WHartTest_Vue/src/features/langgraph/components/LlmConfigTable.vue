@@ -9,6 +9,10 @@
       @page-change="(page: number) => emit('page-change', page)"
       @page-size-change="(pageSize: number) => emit('page-size-change', pageSize)"
     >
+      <template #apiUrl="{ record }">
+        <span v-if="record.provider === 'codex'">{{ record.agent_home || '~/.codex' }}</span>
+        <span v-else>{{ record.api_url }}</span>
+      </template>
       <template #systemPrompt="{ record }">
         <span v-if="record.system_prompt" :title="record.system_prompt">
           {{ record.system_prompt.length > 50 ? record.system_prompt.substring(0, 50) + '...' : record.system_prompt }}
@@ -139,7 +143,7 @@ const columns = computed<TableColumnData[]>(() => [
   { title: text.value.id, dataIndex: 'id', width: isEnglish.value ? 90 : 80, sortable: { sortDirections: ['ascend', 'descend'] } },
   { title: text.value.configName, dataIndex: 'config_name', width: 170, ellipsis: true, tooltip: true },
   { title: text.value.modelName, dataIndex: 'name', width: 170, ellipsis: true, tooltip: true },
-  { title: text.value.apiUrl, dataIndex: 'api_url', width: 220, ellipsis: true, tooltip: true },
+  { title: text.value.apiUrl, dataIndex: 'api_url', slotName: 'apiUrl', width: 220, ellipsis: true, tooltip: true },
   { title: text.value.systemPrompt, dataIndex: 'system_prompt', slotName: 'systemPrompt', width: 220, ellipsis: true, tooltip: true },
   { title: text.value.status, dataIndex: 'is_active', slotName: 'isActive', width: 110, align: 'center' as const },
   { title: text.value.createdAt, dataIndex: 'created_at', slotName: 'createdAt', width: 170, sortable: { sortDirections: ['ascend', 'descend'] } },

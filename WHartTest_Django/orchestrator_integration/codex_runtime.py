@@ -43,7 +43,9 @@ def agent_runtime() -> str:
 
 
 def use_codex_runtime() -> bool:
-    return agent_runtime() == "codex"
+    from langgraph_integration.runtime import active_provider
+
+    return active_provider() == "codex"
 
 
 def data_root() -> Path:
@@ -143,6 +145,18 @@ def save_thread_id(session_id: str, thread_id: str) -> None:
     )
 
 
+def answer_only_instructions(system: str = "") -> str:
+    """短调用只作答，不授权写平台数据。"""
+    lines = [
+        "只根据本次提示作答。",
+        "不要调用工具，不要修改文件，不要访问平台接口。",
+        "只返回要求的最终文本。",
+    ]
+    if system.strip():
+        return system.strip() + "\n" + "\n".join(lines)
+    return "\n".join(lines)
+
+
 def developer_instructions(project_id: int, goal: str = "") -> str:
     backend = os.environ.get("DJANGO_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
     lines = [
@@ -171,8 +185,28 @@ def mcp_config_overrides() -> tuple[str, ...]:
     )
 
 
+def configured_agent_home() -> str:
+    """优先使用已激活的 Codex 配置里的 home，其次才是环境变量。"""
+    try:
+        from django.apps import apps
+
+        if apps.ready:
+            from langgraph_integration.models import LLMConfig
+
+            config = (
+                LLMConfig.objects.filter(is_active=True, provider="codex")
+                .only("agent_home")
+                .first()
+            )
+            if config and (config.agent_home or "").strip():
+                return config.agent_home.strip()
+    except Exception:
+        logger.debug("读取 LLM 配置中的 Codex home 失败", exc_info=True)
+    return os.environ.get("CODEX_HOME", "").strip()
+
+
 def codex_home() -> Path:
-    configured = os.environ.get("CODEX_HOME", "").strip()
+    configured = configured_agent_home()
     if configured:
         return Path(configured).expanduser()
     return Path.home() / ".codex"
@@ -238,7 +272,7 @@ def codex_child_env(api_key: str = "", auth: LocalCodexAuth | None = None) -> di
     return {key: value for key, value in env.items() if value}
 
 
-def build_codex_config(cwd: Path):
+def build_codex_config(cwd: Path, include_mcp: bool = True):
     assert_sdk_version()
     from openai_codex import CodexConfig
 
@@ -249,7 +283,7 @@ def build_codex_config(cwd: Path):
         client_title="WHartTest",
         client_version=EXPECTED_SDK_VERSION,
         env=codex_child_env(),
-        config_overrides=mcp_config_overrides(),
+        config_overrides=mcp_config_overrides() if include_mcp else (),
     )
 
 
@@ -367,6 +401,58 @@ def lookup_api_key(user) -> str:
         .first()
     )
     return key or ""
+
+
+def run_codex_completion(prompt: str, system: str = "", timeout_s: int = 20) -> str:
+    """只读短调用。不挂 MCP，不写平台数据。"""
+    import threading
+
+    from openai_codex import ApprovalMode, Codex, Sandbox
+
+    workspace = workspace_for("calls", uuid.uuid4().hex)
+    auth = load_local_codex_auth()
+    config = build_codex_config(workspace, include_mcp=False)
+    config.env = codex_child_env("", auth)
+    holder: dict = {}
+
+    def _run():
+        try:
+            with Codex(config) as codex:
+                ensure_api_key_login(codex, auth)
+                thread = codex.thread_start(
+                    cwd=str(workspace),
+                    sandbox=Sandbox.read_only,
+                    approval_mode=ApprovalMode.deny_all,
+                    developer_instructions=answer_only_instructions(system),
+                    **thread_model_kwargs(auth),
+                )
+                turn = thread.turn(
+                    prompt,
+                    cwd=str(workspace),
+                    sandbox=Sandbox.read_only,
+                    approval_mode=ApprovalMode.deny_all,
+                    source="wharttest_complete",
+                )
+                holder["turn"] = turn
+                holder["result"] = turn.run()
+        except Exception as exc:
+            holder["error"] = exc
+
+    worker = threading.Thread(target=_run, name="codex-short-call", daemon=True)
+    worker.start()
+    worker.join(timeout_s)
+    if worker.is_alive():
+        turn = holder.get("turn")
+        if turn is not None:
+            try:
+                turn.interrupt()
+            except Exception:
+                logger.debug("中断 Codex 短调用失败", exc_info=True)
+        raise TimeoutError(f"Codex 短调用超过 {timeout_s} 秒")
+    if holder.get("error"):
+        raise holder["error"]
+    result = holder.get("result")
+    return (getattr(result, "final_response", None) or "") if result else ""
 
 
 def run_codex_prompt(project_id: int, goal: str, workspace_key: str, api_key: str = "") -> dict[str, str]:

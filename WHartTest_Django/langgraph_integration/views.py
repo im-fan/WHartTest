@@ -296,6 +296,8 @@ def create_llm_instance(active_config, temperature=0.7):
     - timeout: 请求超时时间（秒），防止无限期等待
     - max_retries: 最大重试次数，处理临时网络问题
     """
+    if getattr(active_config, "provider", "") == "codex":
+        raise ValueError("Codex 配置不能创建 ChatOpenAI，请使用 langgraph_integration.runtime")
     model_identifier = active_config.name or "gpt-3.5-turbo"
     provider = (getattr(active_config, "provider", None) or "openai_compatible").strip()
 
@@ -566,10 +568,45 @@ class LLMConfigViewSet(BaseModelViewSet):
             ).update(is_active=False)
         serializer.save()
 
+    @action(detail=False, methods=["get"], url_path="active-runtime")
+    def active_runtime(self, request):
+        """返回当前生效的模型或 Agent。没有配置行时，Codex 仍视为可用。"""
+        from langgraph_integration.runtime import active_provider
+        from orchestrator_integration.codex_runtime import configured_agent_home
+
+        config = LLMConfig.objects.filter(is_active=True).first()
+        if config:
+            return Response(self.get_serializer(config).data)
+        if active_provider() == "codex":
+            return Response({
+                "provider": "codex",
+                "config_name": "Codex",
+                "name": "codex",
+                "api_url": "",
+                "agent_home": configured_agent_home() or LLMConfig.CODEX_DEFAULT_HOME,
+                "system_prompt": "",
+                "supports_vision": False,
+                "enable_streaming": True,
+                "is_active": True,
+                "runtime_source": "default",
+            })
+        return Response(None)
+
     @action(detail=True, methods=["post"])
     def test_connection(self, request, pk=None):
         """测试LLM配置连接"""
         config = self.get_object()
+
+        if config.provider == "codex":
+            from pathlib import Path
+
+            home = Path(config.agent_home or LLMConfig.CODEX_DEFAULT_HOME).expanduser()
+            if (home / "config.toml").is_file():
+                return Response({"status": "success", "message": f"已找到 Codex 配置：{home}"})
+            return Response(
+                {"status": "error", "message": f"未找到 Codex 配置：{home / 'config.toml'}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             llm = create_llm_instance(config, temperature=0.1)
@@ -1043,6 +1080,19 @@ class ChatAPIView(APIView):
                     "message": f"附件校验失败: {exc}",
                     "data": {},
                     "errors": {"file_ids": [str(exc)]},
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from langgraph_integration.runtime import active_provider
+
+        if await sync_to_async(active_provider)() == "codex":
+            return Response(
+                {
+                    "status": "error",
+                    "code": status.HTTP_400_BAD_REQUEST,
+                    "message": "当前激活的是 Codex，请使用 /api/orchestrator/agent-loop/。",
+                    "data": {},
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -2045,6 +2095,40 @@ def _cleanup_mcp_session_for_chat(user_id, project_id, session_id):
             e,
         )
 
+def history_from_chat_messages(chat_session):
+    """checkpoint 为空时，从 ChatMessage 还原历史。Codex 对话只写这张表。"""
+    history = []
+    records = ChatMessage.objects.filter(session=chat_session).order_by("created_at", "id")
+    for record in records:
+        content = record.content or ""
+        if not str(content).strip() and not record.images and not record.image:
+            continue
+        message_data = {
+            "type": record.role,
+            "content": content,
+            "message_id": record.message_id,
+            "timestamp": timezone.localtime(record.created_at).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        if record.images:
+            message_data["images"] = record.images
+        if record.image:
+            message_data["image"] = record.image
+        metadata = record.metadata or {}
+        for key in (
+            "agent",
+            "agent_type",
+            "step",
+            "max_steps",
+            "sse_event_type",
+            "is_thinking_process",
+            "tool_input",
+        ):
+            if metadata.get(key) is not None:
+                message_data[key] = metadata[key]
+        history.append(message_data)
+    return history
+
+
 class ChatHistoryAPIView(APIView):
     """
     根据 session_id 获取聊天历史的 API 端点。
@@ -2101,6 +2185,7 @@ class ChatHistoryAPIView(APIView):
         # 获取会话信息（包括关联的提示词）
         prompt_id = None
         prompt_name = None
+        chat_session = None
         try:
             chat_session = ChatSession.objects.select_related("prompt").get(
                 session_id=session_id, user=request.user, project_id=project_id
@@ -2480,6 +2565,13 @@ class ChatHistoryAPIView(APIView):
                         f"ChatHistoryAPIView: No checkpoints found for thread_id: {thread_id}"
                     )
             # 仅处理最新 checkpoint，可拿到最终消息状态并避免重复。
+            if not history_messages and chat_session is not None:
+                history_messages = history_from_chat_messages(chat_session)
+                logger.info(
+                    "ChatHistoryAPIView: Loaded %s messages from ChatMessage for session %s",
+                    len(history_messages),
+                    session_id,
+                )
 
             # 获取当前上下文Token使用信息（取最后一条 AI 消息的 usage_metadata）
             context_token_count = 0
@@ -3164,6 +3256,11 @@ class ChatResumeAPIView(View):
 
         try:
             active_config = await sync_to_async(LLMConfig.objects.get)(is_active=True)
+            if active_config.provider == "codex":
+                yield create_sse_data(
+                    {"type": "error", "message": "当前激活的是 Codex，请使用 /api/orchestrator/agent-loop/resume/。"}
+                )
+                return
             logger.info(
                 f"ChatResumeAPIView: Using active LLMConfig: {active_config.name}"
             )
@@ -3575,10 +3672,17 @@ class ProviderChoicesAPIView(APIView):
 
     def get(self, request, *args, **kwargs):
         """返回所有可用的供应商选项"""
-        choices = [
-            {"value": choice[0], "label": choice[1]}
-            for choice in LLMConfig.PROVIDER_CHOICES
-        ]
+        from orchestrator_integration.codex_runtime import CodexRuntimeError, resolve_codex_bin
+
+        codex_available = True
+        try:
+            resolve_codex_bin()
+        except CodexRuntimeError:
+            codex_available = False
+        choices = []
+        for value, label in LLMConfig.PROVIDER_CHOICES:
+            available = codex_available if value == "codex" else True
+            choices.append({"value": value, "label": label, "available": available})
         return Response(
             {
                 "status": "success",
@@ -3656,8 +3760,9 @@ class KnowledgeRAGAPIView(APIView):
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     )
 
-                # 使用新的LLM工厂函数，支持多供应商
-                llm = create_llm_instance(active_config, temperature=0.7)
+                from langgraph_integration.runtime import get_active_runtime
+
+                llm = get_active_runtime(temperature=0.7)
             except Exception as e:
                 logger.error(f"LLM配置错误: {e}")
                 return Response(

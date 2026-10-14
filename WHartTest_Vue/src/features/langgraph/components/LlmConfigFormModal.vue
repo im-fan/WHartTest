@@ -62,12 +62,17 @@
           </a-form-item>
         </a-col>
 
-        <a-col :span="12">
+        <a-col v-if="isCodex" :span="24">
+          <a-form-item field="agent_home" :label="text.agentHome" required>
+            <a-input v-model="formData.agent_home" :placeholder="CODEX_DEFAULT_HOME" />
+          </a-form-item>
+        </a-col>
+        <a-col v-if="!isCodex" :span="12">
           <a-form-item field="api_url" label="API URL" required>
             <a-input v-model="formData.api_url" :placeholder="apiUrlPlaceholder" />
           </a-form-item>
         </a-col>
-        <a-col :span="12">
+        <a-col v-if="!isCodex" :span="12">
           <a-form-item field="api_key" label="API Key">
             <a-input-password
               v-model="formData.api_key"
@@ -265,6 +270,9 @@ const text = computed(() => (
         providerOpenAICompatible: 'OpenAI Compatible',
         providerDeepSeek: 'DeepSeek',
         providerQwen: 'Qwen',
+        providerCodex: 'Codex',
+        agentHome: 'Agent home',
+        agentHomeRequired: 'Agent home is required',
         deepseekApiHint: 'DeepSeek is recommended with the official /v1 endpoint and the dedicated DeepSeek provider',
       }
     : {
@@ -315,6 +323,9 @@ const text = computed(() => (
         providerOpenAICompatible: 'OpenAI 兼容',
         providerDeepSeek: 'DeepSeek',
         providerQwen: 'Qwen/通义千问',
+        providerCodex: 'Codex',
+        agentHome: 'Agent Home',
+        agentHomeRequired: '请填写 Agent Home',
         deepseekApiHint: 'DeepSeek 建议使用官方 /v1 地址，并选择专用 DeepSeek 供应商',
       }
 ));
@@ -329,6 +340,9 @@ const localizeProviderLabel = (value: string, fallback?: string) => {
   if (value === 'qwen') {
     return text.value.providerQwen;
   }
+  if (value === 'codex') {
+    return text.value.providerCodex;
+  }
   return fallback || value;
 };
 
@@ -338,6 +352,7 @@ const providerChoices = ref<Array<{ label: string; value: string }>>([
   { label: 'openai_compatible', value: 'openai_compatible' },
   { label: 'deepseek', value: 'deepseek' },
   { label: 'qwen', value: 'qwen' },
+  { label: 'codex', value: 'codex' },
 ]);
 const providerOptions = computed(() => providerChoices.value.map((item) => ({
   label: localizeProviderLabel(item.value, item.label),
@@ -347,11 +362,13 @@ const loadingModels = ref(false);
 const testingModel = ref(false);
 const DEEPSEEK_DEFAULT_API_URL = 'https://api.deepseek.com/v1';
 const QWEN_DEFAULT_API_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+const CODEX_DEFAULT_HOME = '~/.codex';
 const defaultFormData: CreateLlmConfigRequest = {
   config_name: '',
   provider: 'openai_compatible',
   name: '',
   api_url: '',
+  agent_home: '',
   api_key: '',
   system_prompt: '',
   supports_vision: false,
@@ -369,14 +386,20 @@ const testRequestId = ref(0);
 
 const isEditing = computed(() => !!(props.configData?.id || currentConfigId.value));
 const effectiveConfigId = computed(() => props.configData?.id || currentConfigId.value);
+const isCodex = computed(() => formData.value.provider === 'codex');
 const formRules = computed<Record<string, FieldRule[]>>(() => ({
   config_name: [{ required: true, message: text.value.configNameRequired }],
   provider: [{ required: true, message: text.value.providerRequired }],
   name: [{ required: true, message: text.value.modelNameRequired }],
-  api_url: [
-    { required: true, message: text.value.apiUrlRequired },
-    { type: 'url', message: text.value.apiUrlInvalid },
-  ],
+  api_url: isCodex.value
+    ? []
+    : [
+        { required: true, message: text.value.apiUrlRequired },
+        { type: 'url', message: text.value.apiUrlInvalid },
+      ],
+  agent_home: isCodex.value
+    ? [{ required: true, message: text.value.agentHomeRequired }]
+    : [],
 }));
 
 const apiUrlPlaceholder = computed(() => (
@@ -423,10 +446,12 @@ const loadProviderOptions = async () => {
   try {
     const response = await getProviders();
     if (response.status === 'success' && response.data?.choices?.length) {
-      providerChoices.value = response.data.choices.map((item) => ({
-        label: item.label,
-        value: item.value,
-      }));
+      providerChoices.value = response.data.choices
+        .filter((item) => item.available !== false || item.value === formData.value.provider)
+        .map((item) => ({
+          label: item.label,
+          value: item.value,
+        }));
     }
   } catch (error) {
     console.warn('Failed to load provider list, using defaults', error);
@@ -439,6 +464,15 @@ const handleProviderChange = (provider?: string) => {
   }
   if (provider === 'qwen' && !formData.value.api_url) {
     formData.value.api_url = QWEN_DEFAULT_API_URL;
+  }
+  if (provider === 'codex') {
+    if (!formData.value.agent_home) {
+      formData.value.agent_home = CODEX_DEFAULT_HOME;
+    }
+    if (!formData.value.name) {
+      formData.value.name = 'codex';
+    }
+    formData.value.api_url = '';
   }
 };
 
@@ -457,6 +491,7 @@ watch(
           provider: props.configData.provider || 'openai_compatible',
           name: props.configData.name,
           api_url: props.configData.api_url,
+          agent_home: props.configData.agent_home || (props.configData.provider === 'codex' ? CODEX_DEFAULT_HOME : ''),
           api_key: '',
           system_prompt: props.configData.system_prompt || '',
           supports_vision: props.configData.supports_vision || false,
@@ -492,7 +527,8 @@ const handleSubmit = async () => {
       config_name: formData.value.config_name,
       provider: formData.value.provider,
       name: formData.value.name,
-      api_url: formData.value.api_url,
+      api_url: formData.value.provider === 'codex' ? '' : formData.value.api_url,
+      agent_home: formData.value.provider === 'codex' ? (formData.value.agent_home || CODEX_DEFAULT_HOME) : '',
       is_active: formData.value.is_active,
     };
     if (formData.value.api_key) {
@@ -638,7 +674,8 @@ const testLlmModel = async () => {
         config_name: formData.value.config_name,
         provider: formData.value.provider,
         name: formData.value.name,
-        api_url: formData.value.api_url,
+        api_url: formData.value.provider === 'codex' ? '' : formData.value.api_url,
+        agent_home: formData.value.provider === 'codex' ? (formData.value.agent_home || CODEX_DEFAULT_HOME) : '',
         is_active: formData.value.is_active,
       };
       if (formData.value.api_key) partialData.api_key = formData.value.api_key;

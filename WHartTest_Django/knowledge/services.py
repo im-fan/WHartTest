@@ -1931,34 +1931,18 @@ class KnowledgeBaseService:
     def _rewrite_query(self, query: str) -> Optional[str]:
         """用 LLM 改写查询，提升检索召回率"""
         try:
-            from langgraph_integration.models import LLMConfig
-            from langchain_openai import ChatOpenAI
+            from langgraph_integration.runtime import active_provider, complete
 
-            config = LLMConfig.objects.filter(is_active=True).first()
-            if not config:
+            if active_provider() == "codex":
                 return None
 
-            llm = ChatOpenAI(
-                model=config.name,
-                api_key=config.api_key,
-                base_url=config.api_url,
-                temperature=0.3,
-                max_tokens=100,
-                timeout=15,
-            )
-            response = llm.invoke(
-                [
-                    {
-                        "role": "system",
-                        "content": (
-                            "你是查询改写助手。将用户问题改写为更精确、完整的检索查询。"
-                            "保留核心语义，补充隐含意图，去除口语化表达。只返回改写后的查询。"
-                        ),
-                    },
-                    {"role": "user", "content": query},
-                ]
-            )
-            rewritten = response.content.strip()
+            rewritten = complete(
+                query,
+                system=(
+                    "你是查询改写助手。将用户问题改写为更精确、完整的检索查询。"
+                    "保留核心语义，补充隐含意图，去除口语化表达。只返回改写后的查询。"
+                ),
+            ).strip()
             if rewritten and rewritten != query:
                 logger.info(f"Query Rewrite: '{query}' → '{rewritten}'")
                 return rewritten

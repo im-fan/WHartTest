@@ -13,7 +13,9 @@ class LLMConfig(models.Model):
         ('openai_compatible', 'OpenAI 兼容'),
         ('deepseek', 'DeepSeek'),
         ('qwen', 'Qwen/通义千问'),
+        ('codex', 'Codex'),
     ]
+    CODEX_DEFAULT_HOME = '~/.codex'
 
     config_name = models.CharField(max_length=255, unique=True, verbose_name="配置名称",
                                   help_text="用户自定义的配置名称，如'生产环境OpenAI'、'测试Claude配置'")
@@ -21,7 +23,14 @@ class LLMConfig(models.Model):
                                help_text="LLM服务供应商")
     name = models.CharField(max_length=255, verbose_name="模型名称",
                            help_text="具体的模型名称，如 gpt-4, claude-3-sonnet, gpt-3.5-turbo")
-    api_url = models.URLField(verbose_name="API地址", help_text="LLM服务的API端点URL")
+    api_url = models.URLField(blank=True, default='', verbose_name="API地址", help_text="LLM服务的API端点URL。Codex 等本地 Agent 可留空")
+    agent_home = models.CharField(
+        max_length=512,
+        blank=True,
+        default='',
+        verbose_name="Agent Home",
+        help_text="本地 Agent 的配置目录。Codex 默认 ~/.codex",
+    )
     api_key = models.CharField(max_length=512, blank=True, default='', verbose_name="API密钥", help_text="访问LLM服务的API密钥（可选）")
     system_prompt = models.TextField(blank=True, null=True, verbose_name="系统提示词",
                                     help_text="指导LLM行为的系统级提示词")

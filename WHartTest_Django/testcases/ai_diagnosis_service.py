@@ -8,10 +8,7 @@ import logging
 import re
 from typing import Any, Dict, Optional
 from django.utils import timezone
-from langchain_core.messages import HumanMessage, SystemMessage
 
-from langgraph_integration.models import LLMConfig
-from langgraph_integration.views import create_llm_instance
 from ui_automation.models import UiTestCase, UiExecutionRecord, UiElement, UiCaseStepsDetailed
 
 logger = logging.getLogger(__name__)
@@ -365,21 +362,13 @@ UI用例名称: {testcase.ui_test_case.name if testcase.ui_test_case else '无'}
     diagnosis_result = None
 
     try:
-        active_config = LLMConfig.objects.filter(is_active=True).first()
-        if active_config:
-            llm = create_llm_instance(active_config, temperature=0.2)
-            messages = [
-                SystemMessage(content=DIAGNOSIS_SYSTEM_PROMPT),
-                HumanMessage(content=user_prompt),
-            ]
-            response = llm.invoke(messages)
-            content_text = getattr(response, "content", "")
-            if isinstance(content_text, list):
-                content_text = "".join([c.get("text", "") if isinstance(c, dict) else str(c) for c in content_text])
-            diagnosis_result = _extract_json_from_text(str(content_text))
-            if diagnosis_result:
-                diagnosis_result["diagnosed_by"] = "llm"
-                diagnosis_result["model_name"] = active_config.name
+        from langgraph_integration.runtime import active_provider, complete
+
+        content_text = complete(user_prompt, system=DIAGNOSIS_SYSTEM_PROMPT)
+        diagnosis_result = _extract_json_from_text(str(content_text))
+        if diagnosis_result:
+            diagnosis_result["diagnosed_by"] = "llm"
+            diagnosis_result["model_name"] = active_provider()
     except Exception as e:
         logger.error(f"调用 LLM 诊断失败: {e}", exc_info=True)
 
